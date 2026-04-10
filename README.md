@@ -64,7 +64,7 @@ SHIKSHA-MoE/
 ## Installation
 
 ```bash
-git clone https://github.com/Allen-Career-Institute/SHIKSHA-MoE.git
+git clone https://github.com/..........
 cd SHIKSHA-MoE/code
 pip install -r requirements.txt
 ```
@@ -148,7 +148,7 @@ We release a benchmark test set for evaluating code-switched STEM ASR:
 
 > **Note:** GitHub's web interface only displays the first 1,000 files in a directory. To access all 3,500 audio files, clone the repository:
 > ```bash
-> git clone https://github.com/Shyamji07/SHIKSHA-MoE.git
+> git clone https://github.com/......
 > ls SHIKSHA-MoE/dataset/audios/ | wc -l  # Output: 3500
 > ```
 
