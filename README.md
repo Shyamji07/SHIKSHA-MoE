@@ -29,16 +29,31 @@ Input x
 
 - **Active neurons per token**: 256 (shared) + 2 × 256 (routed) = 768
 - **Dense baseline**: 1536 neurons → **50% encoder FFN FLOP reduction**
-- **Memory footprint**: Virtually unchanged (37M → 35M active, all 37M stored)
+- **Stored per layer**: 5 × 256 = 1280 of the 1536 pre-trained rows, i.e. 17% fewer than
+  dense. The remaining 256 rows are discarded (see Weight Initialization)
+- **Memory footprint**: virtually unchanged (37.0M stored, 35.4M active per token,
+  71 MiB at FP16 with every expert resident)
 
 ### Results (STEM-Hinglish-1.2K)
 
-| Model | Params | WER ↓ | STEM-WER ↓ | Semantic Reliability |
-|-------|--------|-------|------------|---------------------|
-| Teacher (Whisper Small) | 242M | 6.0% | — | — |
-| Dense (4E-4D) | 37M | 9.5% | 14.2% | 96% |
-| Partitioned MoE | 33M | 9.9% | 16.8% | 71% |
-| **SHIKSHA-MoE (4E-4D)** | **37M** | **8.3%** | **9.8%** | **97%** |
+| Model | Params (stored/active) | Active FFN units | WER ↓ | STEM-WER ↓ | Semantic Reliability |
+|-------|--------|--------|-------|------------|---------------------|
+| Teacher (Whisper Small) | 242M / 242M | 3072 | 6.0% | 8.7% | — |
+| Dense (4E-4D) | 37.8M / 37.8M | 1536 | 9.5% | 15.1% | 96% |
+| Partitioned MoE (4×256, top-2, no shared expert) | 36.2M / 34.7M | 512 | 9.9% | 17.4% | 71% |
+| SHIKSHA-MoE (4E-4D), top-1 | 37.0M / 34.7M | 512 | 9.6% | 12.9% | 94% |
+| **SHIKSHA-MoE (4E-4D), top-2** | **37.0M / 35.4M** | **768** | **8.3%** | **10.1%** | **97%** |
+
+> **STEM-WER values updated.** These charge insertions (see the STEM-WER section
+> below). The previously published figures (14.2 / 16.8 / 9.8) used `(S_T + D_T) / N_T`,
+> which did not count a glossary term the model produced that nobody said. Rankings are
+> unchanged.
+
+> **The 512-unit rows are the controlled pair.** Partitioned MoE and SHIKSHA top-1 both
+> activate 512 units per token in two blocks of 256, cut from the same slicing of the
+> same pre-trained `W_1`. The only difference is that one of SHIKSHA's two active blocks
+> is never gated off, and that is worth 23 points of semantic reliability (71 → 94).
+> Expert granularity is held fixed across it.
 
 ---
 
@@ -138,7 +153,7 @@ We release a benchmark test set for evaluating code-switched STEM ASR:
 | Characteristic | Value |
 |----------------|-------|
 | Test utterances | 3,500 |
-| Duration | ~42 hours |
+| Duration | ~14.6 hours (15 s mean per utterance) |
 | Domains | Physics, Chemistry, Biology, Mathematics |
 | Unique STEM terms | 2,400 |
 | Code-switch points/utt | 2.4 (avg) |
@@ -166,13 +181,24 @@ audios/stem_hinglish_00042.wav,"sir is question mein zero point five per female 
 Standard WER treats "the" and "bryophytes" equally. STEM-WER isolates recognition quality on domain-critical terms:
 
 ```
-STEM-WER = (S_T + D_T) / N_T
+STEM-WER = (S_T + D_T + I_T) / N_T
 ```
 
 where:
 - `N_T` = count of reference tokens in the STEM glossary
 - `S_T` = substituted STEM tokens
 - `D_T` = deleted STEM tokens
+- `I_T` = **inserted** hypothesis tokens that are in the glossary
+
+`I_T` has to be charged, or the metric exempts the error it exists to catch: a
+technical term the model produced and nobody said. This follows the biased-WER (B-WER)
+convention of Le et al., Interspeech 2021. `eval_model.py` takes
+`charge_insertions=False` to reproduce the earlier `(S_T + D_T) / N_T` numbers.
+
+Two known limits: utterances with `N_T = 0` are skipped, so a term hallucinated in one
+of those is still not counted; and the score is a mean of per-utterance ratios, which is
+noisy when `N_T` is small. `eval_model.py` now also prints the pooled figure
+(`sum(errors) / sum(glossary tokens)`), which is what B-WER uses.
 
 ---
 
@@ -187,16 +213,34 @@ where:
 
 ### Weight Initialization
 
-The shared expert is initialized from the **first 256 columns** of the pre-trained FFN weight matrix (most common linguistic patterns). Routed experts are initialized from subsequent columns, ensuring domain-specific neurons are distributed across specialists.
+`W_1` has shape `(d_ff, d) = (1536, 384)`, so the hidden units are its **rows**.
+Accounting for all 1536 of them:
+
+| Rows | Goes to |
+|---|---|
+| 0–255 | shared expert (the always-on anchor), with the matching columns of `W_2` |
+| 256–1279 | the four routed experts, in contiguous blocks of 256 |
+| 1280–1535 | **discarded** |
+
+The slice is positional, not activation-ranked: rows were not sorted by activation
+before slicing. Ranking them first (as MOEfication and ExpertWeaver do) is the most
+promising single change we can identify, and we have not tried it.
+
+Only the shared path inherits `W_2`'s output bias, so the summed paths reproduce the
+dense bias once rather than `k+1` times. With `shared_dim=0` (no anchor) routed expert 0
+inherits it instead.
 
 ### Inference Efficiency
 
-| Model | A100 GPU | CPU (Xeon) | CPU RTF |
+| Model | A100 GPU | CPU (Xeon 8380, 1 core) | CPU RTF |
 |-------|----------|------------|---------|
-| Dense (4E-4D) | 280ms | 680ms | 0.045 |
-| SHIKSHA (4E-4D) | 265ms | 495ms | 0.033 |
+| Dense (4E-4D) | 281ms | 680ms | 0.045 |
+| SHIKSHA (4E-4D) | 253ms | 495ms | 0.033 |
 
-27% CPU latency reduction (4E-4D); 33% (4E-2D).
+27% CPU latency reduction (4E-4D); 33% (4E-2D); 10% on the A100, where attention and
+the decoder dominate. RTF is at the 15 s mean utterance length. The Xeon 8380 has no
+native FP16 arithmetic, so the CPU figures are FP32 compute, and one server core is a
+proxy for the edge setting rather than an on-device measurement.
 
 ---
 
