@@ -69,24 +69,29 @@ def normalize_text(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def compute_stem_wer(reference, hypothesis, glossary):
+def compute_stem_wer(reference, hypothesis, glossary, charge_insertions=True):
     """
     Compute STEM-WER: WER restricted to STEM glossary terms.
 
-    STEM-WER = (S_T + D_T) / N_T
-    where N_T = count of reference tokens in glossary,
-    S_T = substituted STEM tokens, D_T = deleted STEM tokens.
+        STEM-WER = (S_T + D_T + I_T) / N_T
+
+    N_T = reference tokens in the glossary; S_T, D_T = glossary tokens that were
+    substituted or deleted; I_T = glossary tokens the hypothesis INSERTED, i.e.
+    technical terms the model produced that nobody said. Charging I_T follows the
+    biased-WER convention of Le et al. (Interspeech 2021); without it the metric
+    exempts the single error mode it exists to catch. Pass charge_insertions=False
+    to reproduce the pre-2026 numbers.
+
+    Returns (errors, n_ref_terms), or None when the reference has no glossary term.
     """
     ref_words = normalize_text(reference).split()
     hyp_words = normalize_text(hypothesis).split()
 
-    ref_stem = [w for w in ref_words if w in glossary]
-    if not ref_stem:
+    n_ref_terms = sum(1 for w in ref_words if w in glossary)
+    if n_ref_terms == 0:
         return None
 
-    alignment = jiwer.process_words(
-        " ".join(ref_words), " ".join(hyp_words)
-    )
+    alignment = jiwer.process_words(" ".join(ref_words), " ".join(hyp_words))
 
     stem_errors = 0
     for chunk in alignment.alignments[0]:
@@ -94,8 +99,12 @@ def compute_stem_wer(reference, hypothesis, glossary):
             for idx in range(chunk.ref_start_idx, chunk.ref_end_idx):
                 if idx < len(ref_words) and ref_words[idx] in glossary:
                     stem_errors += 1
+        elif chunk.type == "insert" and charge_insertions:
+            for idx in range(chunk.hyp_start_idx, chunk.hyp_end_idx):
+                if idx < len(hyp_words) and hyp_words[idx] in glossary:
+                    stem_errors += 1
 
-    return stem_errors / len(ref_stem)
+    return stem_errors, n_ref_terms
 
 
 def load_moe_model(checkpoint_dir, args, device):
@@ -199,7 +208,9 @@ def main():
         }
         if glossary:
             sw = compute_stem_wer(gt, transcript, glossary)
-            entry["stem_wer"] = sw
+            if sw is not None:
+                entry["stem_errors"], entry["stem_terms"] = sw
+                entry["stem_wer"] = sw[0] / sw[1]
 
         results.append(entry)
 
@@ -215,8 +226,13 @@ def main():
     print(f"CER:  {results_df['cer'].mean() * 100:.2f}%")
     if glossary and "stem_wer" in results_df.columns:
         valid = results_df["stem_wer"].dropna()
-        print(f"STEM-WER: {valid.mean() * 100:.2f}% "
-              f"({len(valid)} utterances with STEM terms)")
+        macro = valid.mean() * 100
+        err = results_df["stem_errors"].dropna().sum()
+        trm = results_df["stem_terms"].dropna().sum()
+        pooled = 100.0 * err / trm if trm else float("nan")
+        print(f"STEM-WER (macro, per-utterance mean): {macro:.2f}%")
+        print(f"STEM-WER (pooled, sum errors / sum terms): {pooled:.2f}%")
+        print(f"  {len(valid)} utterances with STEM terms, {int(trm)} glossary tokens")
     print(f"Avg latency: {results_df['latency_s'].mean() * 1000:.1f} ms")
     print(f"Results saved to: {out_path}")
 
