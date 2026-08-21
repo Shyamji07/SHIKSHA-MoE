@@ -57,7 +57,11 @@ def parse_args():
     parser.add_argument("--num_experts", type=int, default=4)
     parser.add_argument("--top_k", type=int, default=2)
     parser.add_argument("--expert_dim", type=int, default=256)
-    parser.add_argument("--shared_dim", type=int, default=256)
+    parser.add_argument("--shared_dim", type=int, default=256,
+                        help="0 disables the always-on anchor entirely")
+    parser.add_argument("--anchor_init", type=str, default="pretrained",
+                        choices=["pretrained", "shuffled", "random"],
+                        help="how to populate the anchor; see create_shiksha_moe")
     parser.add_argument("--num_encoder_layers", type=int, default=4)
     parser.add_argument("--num_decoder_layers", type=int, default=4)
 
@@ -252,6 +256,7 @@ def main():
         num_decoder_layers=args.num_decoder_layers,
         expert_dim=args.expert_dim,
         shared_dim=args.shared_dim,
+        anchor_init=args.anchor_init,
     )
 
     print(f"Loading teacher: {args.teacher_model}")
