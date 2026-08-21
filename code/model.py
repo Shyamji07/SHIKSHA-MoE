@@ -74,7 +74,12 @@ class HybridMoELayer(nn.Module):
         self.expert_dim = expert_dim
         self.shared_dim = shared_dim
 
-        self.shared_expert = HybridExpertFFN(d_model, shared_dim, dropout)
+        # shared_dim=0 disables the anchor entirely, which is how the
+        # no-shared-expert control is run. Previously shared_dim=0 built an
+        # nn.Linear(d_model, 0) whose forward returned only fc2's bias, i.e. a
+        # constant offset rather than nothing.
+        self.shared_expert = (HybridExpertFFN(d_model, shared_dim, dropout)
+                              if shared_dim > 0 else None)
         self.router = TopKRouter(d_model, num_experts, top_k)
         self.experts = nn.ModuleList([
             HybridExpertFFN(d_model, expert_dim, dropout)
@@ -85,7 +90,8 @@ class HybridMoELayer(nn.Module):
         batch_size, seq_len, d_model = x.shape
         x_flat = x.view(-1, d_model)
 
-        shared_output = self.shared_expert(x_flat)
+        shared_output = (self.shared_expert(x_flat) if self.shared_expert is not None
+                         else torch.zeros_like(x_flat))
 
         router_probs, top_k_indices, top_k_weights = self.router(x)
         top_k_indices_flat = top_k_indices.view(-1, self.top_k)
@@ -197,9 +203,12 @@ def create_shiksha_moe(
     """
     Create a SHIKSHA-MoE model from a pre-trained Whisper checkpoint.
 
-    Performs deterministic weight initialization:
-      - Shared expert: first `shared_dim` columns of original FFN W1
-      - Routed experts: subsequent columns, sliced per expert
+    Performs deterministic weight initialization over the rows of W1:
+      - Shared expert: rows [0, shared_dim)
+      - Routed experts: rows [shared_dim + i*expert_dim, shared_dim + (i+1)*expert_dim)
+      - Rows at or above shared_dim + num_experts*expert_dim are DISCARDED.
+        At the paper's defaults (shared_dim=256, num_experts=4, expert_dim=256)
+        that is rows [1280, 1536), i.e. 256 of the 1536 pre-trained rows.
 
     Args:
         base_model_name: HuggingFace model ID (e.g. "openai/whisper-tiny")
@@ -282,17 +291,23 @@ def create_shiksha_moe(
         original_fc2 = base_layer.fc2.weight
         original_fc2_bias = base_layer.fc2.bias
 
-        with torch.no_grad():
-            moe_layer.moe_ffn.shared_expert.fc1.weight.copy_(
-                original_fc1[:shared_dim, :]
-            )
-            moe_layer.moe_ffn.shared_expert.fc1.bias.copy_(
-                original_fc1_bias[:shared_dim]
-            )
-            moe_layer.moe_ffn.shared_expert.fc2.weight.copy_(
-                original_fc2[:, :shared_dim]
-            )
-            moe_layer.moe_ffn.shared_expert.fc2.bias.copy_(original_fc2_bias)
+        if shared_dim > 0:
+            with torch.no_grad():
+                moe_layer.moe_ffn.shared_expert.fc1.weight.copy_(
+                    original_fc1[:shared_dim, :]
+                )
+                moe_layer.moe_ffn.shared_expert.fc1.bias.copy_(
+                    original_fc1_bias[:shared_dim]
+                )
+                moe_layer.moe_ffn.shared_expert.fc2.weight.copy_(
+                    original_fc2[:, :shared_dim]
+                )
+                moe_layer.moe_ffn.shared_expert.fc2.bias.copy_(original_fc2_bias)
+        else:
+            # No anchor: the first routed expert inherits W_2's output bias so the
+            # summed paths still reproduce the dense bias exactly once.
+            with torch.no_grad():
+                moe_layer.moe_ffn.experts[0].fc2.bias.copy_(original_fc2_bias)
 
         start_neuron = shared_dim
         for i, expert in enumerate(moe_layer.moe_ffn.experts):
