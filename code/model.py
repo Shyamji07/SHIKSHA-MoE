@@ -199,6 +199,7 @@ def create_shiksha_moe(
     num_decoder_layers=4,
     expert_dim=256,
     shared_dim=256,
+    anchor_init="pretrained",
 ):
     """
     Create a SHIKSHA-MoE model from a pre-trained Whisper checkpoint.
@@ -217,7 +218,17 @@ def create_shiksha_moe(
         num_encoder_layers: Encoder depth
         num_decoder_layers: Decoder depth
         expert_dim: Hidden dimension per routed expert
-        shared_dim: Hidden dimension for the shared expert
+        shared_dim: Hidden dimension for the shared expert (0 = no anchor)
+        anchor_init: how the anchor is populated. Controls for "does the anchor
+            need its pre-trained content, or does it just need to be always on?"
+              "pretrained" - rows [0, shared_dim) of W1, the default and the
+                             configuration reported in the paper
+              "shuffled"   - the SAME entries, permuted. Holds the weight
+                             distribution exactly (mean, std, per-row norm) and
+                             destroys only the co-adaptation structure, so a
+                             negative result cannot be blamed on scale
+              "random"     - Gaussian, std-matched to W1. Weaker control than
+                             "shuffled": scale is matched only in aggregate
 
     Returns:
         model: WhisperForConditionalGeneration with MoE encoder
@@ -293,15 +304,24 @@ def create_shiksha_moe(
 
         if shared_dim > 0:
             with torch.no_grad():
-                moe_layer.moe_ffn.shared_expert.fc1.weight.copy_(
-                    original_fc1[:shared_dim, :]
-                )
-                moe_layer.moe_ffn.shared_expert.fc1.bias.copy_(
-                    original_fc1_bias[:shared_dim]
-                )
-                moe_layer.moe_ffn.shared_expert.fc2.weight.copy_(
-                    original_fc2[:, :shared_dim]
-                )
+                a_w1 = original_fc1[:shared_dim, :].clone()
+                a_b1 = original_fc1_bias[:shared_dim].clone()
+                a_w2 = original_fc2[:, :shared_dim].clone()
+                if anchor_init == "shuffled":
+                    g = torch.Generator().manual_seed(1234 + idx)
+                    for t in (a_w1, a_b1, a_w2):
+                        flat = t.view(-1)
+                        flat.copy_(flat[torch.randperm(flat.numel(), generator=g)])
+                elif anchor_init == "random":
+                    g = torch.Generator().manual_seed(1234 + idx)
+                    a_w1.normal_(0.0, original_fc1.std().item(), generator=g)
+                    a_w2.normal_(0.0, original_fc2.std().item(), generator=g)
+                    a_b1.zero_()
+                elif anchor_init != "pretrained":
+                    raise ValueError("anchor_init must be pretrained/shuffled/random")
+                moe_layer.moe_ffn.shared_expert.fc1.weight.copy_(a_w1)
+                moe_layer.moe_ffn.shared_expert.fc1.bias.copy_(a_b1)
+                moe_layer.moe_ffn.shared_expert.fc2.weight.copy_(a_w2)
                 moe_layer.moe_ffn.shared_expert.fc2.bias.copy_(original_fc2_bias)
         else:
             # No anchor: the first routed expert inherits W_2's output bias so the
