@@ -2,11 +2,11 @@
 
 **Shared Hybrid Inference for Knowledge in STEM Hinglish ASR**
 
-> Preventing Semantic Feature Dissociation in Technical Hinglish ASR via Shared-Expert Sparsity
+> An Always-On Shared Expert Recovers the Semantic Reliability Lost when Sparsifying a Compact Hinglish STEM ASR Encoder
 
 This repository contains the code and evaluation benchmark for the paper:
 
-**"SHIKSHA-MoE: Preventing Semantic Feature Dissociation in Technical Hinglish ASR via Shared-Expert Sparsity"** (Interspeech 2026)
+**"SHIKSHA-MoE: An Always-On Shared Expert Recovers the Semantic Reliability Lost when Sparsifying a Compact Hinglish STEM ASR Encoder"** (under review)
 
 ---
 
@@ -45,7 +45,7 @@ Input x
 | **SHIKSHA-MoE (4E-4D), top-2** | **37.0M / 35.4M** | **768** | **8.3%** | **10.1%** | **97%** |
 
 > **STEM-WER values updated.** These charge insertions (see the STEM-WER section
-> below). The previously published figures (14.2 / 16.8 / 9.8) used `(S_T + D_T) / N_T`,
+> below). An earlier revision of this code reported (14.2 / 16.8 / 9.8), using `(S_T + D_T) / N_T`,
 > which did not count a glossary term the model produced that nobody said. Rankings are
 > unchanged.
 
@@ -79,7 +79,7 @@ SHIKSHA-MoE/
 ## Installation
 
 ```bash
-git clone https://github.com/..........
+git clone https://github.com/Shyamji07/SHIKSHA-MoE.git
 cd SHIKSHA-MoE/code
 pip install -r requirements.txt
 ```
@@ -163,7 +163,7 @@ We release a benchmark test set for evaluating code-switched STEM ASR:
 
 > **Note:** GitHub's web interface only displays the first 1,000 files in a directory. To access all 3,500 audio files, clone the repository:
 > ```bash
-> git clone https://github.com/......
+> git clone https://github.com/Shyamji07/SHIKSHA-MoE.git
 > ls SHIKSHA-MoE/dataset/audios/ | wc -l  # Output: 3500
 > ```
 
@@ -246,15 +246,8 @@ proxy for the edge setting rather than an on-device measurement.
 
 ## Citation
 
-```bibtex
-@inproceedings{shiksha_moe_2026,
-    title={SHIKSHA-MoE: Preventing Semantic Feature Dissociation in Technical Hinglish ASR via Shared-Expert Sparsity},
-    author={Anonymous},
-    booktitle={Proc. Interspeech},
-    year={2026},
-    address={Pittsburgh, PA, USA},
-}
-```
+The paper is under review. A citation will be added here once it is accepted; please do
+not cite a venue for this work before then.
 
 ---
 
